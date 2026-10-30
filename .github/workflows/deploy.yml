@@ -1,0 +1,56 @@
+name: 部署流放圣所网站
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soe-sanctuary-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'wdjwxh/soe-sanctuary' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: 检查网站
+        run: |
+          node --check script.js
+          node --test tests/video-playback.test.cjs
+      - name: 上传并原子切换本站
+        env:
+          SSH_HOST: ${{ secrets.WEBSITE_SSH_HOST }}
+          SSH_USER: ${{ secrets.WEBSITE_SSH_USER }}
+          SSH_KEY: ${{ secrets.WEBSITE_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.WEBSITE_SSH_KNOWN_HOSTS }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest=$(gh api repos/wdjwxh/soe-sanctuary/commits/main --jq .sha)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            echo '已有更新的 main 提交，跳过旧版本部署。'
+            exit 0
+          fi
+          keydir=$(mktemp -d)
+          trap 'rm -rf "$keydir"' EXIT
+          chmod 700 "$keydir"
+          printf '%s\n' "$SSH_KEY" > "$keydir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$keydir/known_hosts"
+          chmod 600 "$keydir/key"
+          git archive --format=tar HEAD index.html style.css script.js assets .nojekyll |
+            ssh -T -i "$keydir/key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$keydir/known_hosts" \
+              -o ConnectTimeout=20 "$SSH_USER@$SSH_HOST" "deploy $GITHUB_SHA"
+          deployed=$(curl --fail --silent --show-error --retry 2 --max-time 30 \
+            "https://pd2soe.wdjwxh.com/deployment.json?revision=$GITHUB_SHA")
+          test "$(printf '%s' "$deployed" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')" = "$GITHUB_SHA"
+          echo "已更新 https://pd2soe.wdjwxh.com/ ($GITHUB_SHA)"

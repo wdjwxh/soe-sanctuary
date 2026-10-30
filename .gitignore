@@ -1,0 +1,7 @@
+preview-server*.log
+tests/*.png
+__pycache__/
+
+# Local operations files must stay outside public source.
+deploy/
+OPERATIONS.md
